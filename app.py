@@ -2,155 +2,154 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from datetime import datetime
 
-# Configuración de la página
-st.set_page_config(page_title="Auditoría Pub V2", layout="wide")
+# Configuración
+st.set_page_config(page_title="Auditoría Pub V3 - Dinámica", layout="wide")
 
-st.title("🕵️ Herramienta de Auditoría Avanzada - Pub")
-st.markdown("---")
-
-# --- BARRA LATERAL: CONFIGURACIÓN Y DATOS ---
-st.sidebar.title("⚙️ Configuración")
-
-# 1. Configuración de Gastos Fijos Mensuales
-with st.sidebar.expander("1. Gastos Fijos Mensuales", expanded=True):
-    st.caption("Introduce los gastos totales del mes para prorratearlos.")
-    alquiler_mes = st.number_input("Alquiler Mensual", value=0.0, step=100.0)
-    personal_fijo_mes = st.number_input("Nóminas/Personal Fijo Mes", value=0.0, step=100.0)
-    otros_fijos_mes = st.number_input("Luz/Agua/Seguros Mes", value=0.0, step=50.0)
-    
-    dias_apertura = st.number_input("¿Cuántos días abres al mes?", value=20, min_value=1, max_value=31)
-    
-    # Cálculo del coste fijo diario
-    total_fijos_mes = alquiler_mes + personal_fijo_mes + otros_fijos_mes
-    coste_fijo_diario = total_fijos_mes / dias_apertura
-    
-    st.info(f"Coste Fijo por día de apertura: **{coste_fijo_diario:.2f}€**")
-
-# 2. Introducción de Datos Diarios
-st.sidebar.header("📝 Datos del Día (Diario)")
-with st.sidebar.form(key='daily_form'):
-    fecha = st.date_input("Fecha")
-    
-    st.subheader("💰 La Caja (Z)")
-    col_a, col_b = st.columns(2)
-    z_total = col_a.number_input("Total Venta (Z)", min_value=0.0, format="%.2f")
-    tarjeta = col_b.number_input("Total Tarjeta", min_value=0.0, format="%.2f")
-    efectivo_real = st.number_input("Efectivo RECONTADO (Cajón)", min_value=0.0, format="%.2f")
-    
-    st.subheader("📦 Compras / Variable")
-    stock_bebida = st.number_input("Compra de Stock (Bebida) HOY", min_value=0.0, format="%.2f", help="Si hoy compraste para toda la semana, ponlo aquí.")
-    personal_extra = st.number_input("Personal Extra/Variable (Hoy)", min_value=0.0, format="%.2f")
-    
-    submit_button = st.form_submit_button(label='Registrar Día')
-
-# --- LÓGICA DE DATOS ---
-if 'data' not in st.session_state:
-    st.session_state.data = pd.DataFrame(columns=[
-        'Fecha', 'Z_Total', 'Tarjeta', 'Efectivo_Teorico', 
-        'Efectivo_Real', 'Descuadre_Caja', 
-        'Compra_Stock', 'Personal_Extra', 'Fijo_Diario_Imputado', 
-        'Beneficio_Estimado'
+# --- INICIALIZACIÓN DE DATOS ---
+if 'diario' not in st.session_state:
+    st.session_state.diario = pd.DataFrame(columns=[
+        'Fecha', 'Mes_Ref', 'Z_Total', 'Tarjeta', 
+        'Efectivo_Teorico', 'Efectivo_Real', 'Descuadre_Caja', 
+        'Gasto_Personal_Dia', 'Compra_Stock_Dia'
     ])
 
-if submit_button:
-    # Cálculos
-    efectivo_teorico = z_total - tarjeta
-    descuadre = efectivo_real - efectivo_teorico
-    
-    # Beneficio = Ventas - (Compras Stock + Extras + Parte proporcional del fijo)
-    # NOTA: Aunque el stock sea para la semana, en flujo de caja sale hoy. 
-    # Pero en el análisis gráfico veremos el acumulado.
-    beneficio_dia = z_total - (stock_bebida + personal_extra + coste_fijo_diario)
-    
-    new_row = {
-        'Fecha': pd.to_datetime(fecha),
-        'Z_Total': z_total,
-        'Tarjeta': tarjeta,
-        'Efectivo_Teorico': efectivo_teorico,
-        'Efectivo_Real': efectivo_real,
-        'Descuadre_Caja': descuadre,
-        'Compra_Stock': stock_bebida,
-        'Personal_Extra': personal_extra,
-        'Fijo_Diario_Imputado': coste_fijo_diario,
-        'Beneficio_Estimado': beneficio_dia
-    }
-    
-    new_df = pd.DataFrame([new_row])
-    st.session_state.data = pd.concat([st.session_state.data, new_df], ignore_index=True)
-    st.success(f"Día {fecha} registrado. Coste fijo imputado: {coste_fijo_diario:.2f}€")
+if 'fijos' not in st.session_state:
+    st.session_state.fijos = pd.DataFrame(columns=['Mes_Ref', 'Concepto', 'Importe'])
 
-# --- DASHBOARD ---
-if not st.session_state.data.empty:
-    df = st.session_state.data.sort_values(by='Fecha')
+# Función auxiliar para formato mes (YYYY-MM)
+def get_month_str(date_obj):
+    return date_obj.strftime("%Y-%m")
+
+# --- SIDEBAR: INTRODUCCIÓN DE DATOS ---
+st.sidebar.title("📝 Panel de Control")
+
+# 1. GASTOS FIJOS (FACTURAS)
+with st.sidebar.expander("1. Añadir Factura / Gasto Fijo", expanded=False):
+    st.caption("Luz, Agua, Alquiler, Seguros...")
+    mes_gasto = st.date_input("Mes al que pertenece la factura", key="date_gasto")
+    concepto = st.selectbox("Tipo de Gasto", ["Alquiler", "Luz", "Agua", "Gestoría", "Internet", "Otros"])
+    importe_fijo = st.number_input("Importe Factura (€)", min_value=0.0, step=10.0, key="imp_gasto")
     
-    # KPIs GLOBALES (Lo importante para la reunión)
-    st.header("📊 Visión Global del Periodo Analizado")
+    if st.button("Guardar Gasto Fijo"):
+        mes_str = get_month_str(mes_gasto)
+        new_gasto = {'Mes_Ref': mes_str, 'Concepto': concepto, 'Importe': importe_fijo}
+        st.session_state.fijos = pd.concat([st.session_state.fijos, pd.DataFrame([new_gasto])], ignore_index=True)
+        st.success(f"Gasto de {concepto} añadido a {mes_str}")
+
+# 2. OPERATIVA DIARIA
+with st.sidebar.expander("2. Añadir Día de Apertura", expanded=True):
+    st.caption("Datos del cierre de cada noche")
+    fecha_dia = st.date_input("Fecha de Apertura", key="date_dia")
     
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown("**Ingresos y Caja**")
+    z_dia = st.number_input("Total Z (Ventas)", min_value=0.0, step=50.0)
+    tarjeta_dia = st.number_input("Total Tarjeta", min_value=0.0, step=50.0)
+    efectivo_real_dia = st.number_input("Efectivo RECONTADO (Cajón)", min_value=0.0, step=50.0)
     
-    # 1. Descuadre ACUMULADO (¿Falta dinero en total?)
-    sum_descuadre = df['Descuadre_Caja'].sum()
-    col1.metric("Descuadre Caja Acumulado", f"{sum_descuadre:.2f}€", delta_color="normal")
-    if sum_descuadre < -20:
-        col1.error("🚨 FALTA EFECTIVO")
+    st.markdown("**Gastos del Día**")
+    personal_dia = st.number_input("Pago Personal (Hoy)", min_value=0.0, step=10.0)
+    stock_dia = st.number_input("Compra Bebida/Hielo (Hoy)", min_value=0.0, step=10.0)
     
-    # 2. Ratio de Bebida ACUMULADO (La clave para el stock semanal)
-    total_ventas = df['Z_Total'].sum()
-    total_compras_stock = df['Compra_Stock'].sum()
+    if st.button("Guardar Día"):
+        mes_str = get_month_str(fecha_dia)
+        teorico = z_dia - tarjeta_dia
+        descuadre = efectivo_real_dia - teorico
+        
+        new_dia = {
+            'Fecha': pd.to_datetime(fecha_dia),
+            'Mes_Ref': mes_str,
+            'Z_Total': z_dia,
+            'Tarjeta': tarjeta_dia,
+            'Efectivo_Teorico': teorico,
+            'Efectivo_Real': efectivo_real_dia,
+            'Descuadre_Caja': descuadre,
+            'Gasto_Personal_Dia': personal_dia,
+            'Compra_Stock_Dia': stock_dia
+        }
+        st.session_state.diario = pd.concat([st.session_state.diario, pd.DataFrame([new_dia])], ignore_index=True)
+        st.success(f"Día {fecha_dia} registrado correctamente.")
+
+# --- LÓGICA DE ANÁLISIS ---
+st.title("🕵️ Auditoría Financiera y Fraude")
+
+# Selector de Mes para analizar
+if not st.session_state.diario.empty:
+    lista_meses = st.session_state.diario['Mes_Ref'].unique()
+    mes_seleccionado = st.selectbox("Selecciona el Mes a Analizar", lista_meses)
     
-    if total_ventas > 0:
-        ratio_stock_real = (total_compras_stock / total_ventas) * 100
+    # FILTRAR DATOS POR MES
+    df_d = st.session_state.diario[st.session_state.diario['Mes_Ref'] == mes_seleccionado].copy()
+    df_f = st.session_state.fijos[st.session_state.fijos['Mes_Ref'] == mes_seleccionado].copy()
+    
+    # CÁLCULOS DINÁMICOS
+    # 1. Cuántos días se abrió este mes
+    dias_abiertos = len(df_d)
+    
+    # 2. Total Gastos Fijos del Mes
+    total_fijos_mes = df_f['Importe'].sum()
+    
+    # 3. Ratio diario (La clave de tu petición)
+    if dias_abiertos > 0:
+        coste_fijo_por_dia_abierto = total_fijos_mes / dias_abiertos
     else:
-        ratio_stock_real = 0
+        coste_fijo_por_dia_abierto = 0
         
-    col2.metric("Ratio Coste Bebida (Global)", f"{ratio_stock_real:.1f}%")
-    if ratio_stock_real > 35:
-        col2.warning("⚠️ OJO: Ratio alto (>35%)")
-    elif ratio_stock_real < 20:
-        col2.success("✅ Ratio excelente")
-        
-    # 3. Beneficio Neto Estimado
-    total_beneficio = df['Beneficio_Estimado'].sum()
-    col3.metric("Beneficio Neto (Estimado)", f"{total_beneficio:.2f}€")
+    # 4. Aplicar gastos al dataframe diario para ver beneficio real
+    df_d['Fijo_Asignado'] = coste_fijo_por_dia_abierto
+    df_d['Beneficio_Neto'] = df_d['Z_Total'] - (df_d['Gasto_Personal_Dia'] + df_d['Compra_Stock_Dia'] + df_d['Fijo_Asignado'])
 
-    # 4. Proyección Ventas Mes (Si seguimos así)
-    dias_registrados = len(df)
-    if dias_registrados > 0:
-        proyeccion = (total_ventas / dias_registrados) * dias_apertura
-        col4.metric("Proyección Ventas Mes", f"{proyeccion:.0f}€")
+    # --- MOSTRAR RESULTADOS ---
+    
+    # ALARMAS DE FRAUDE
+    st.subheader("🚨 Detección de Anomalías")
+    c1, c2, c3 = st.columns(3)
+    
+    total_descuadre = df_d['Descuadre_Caja'].sum()
+    c1.metric("Descuadre Caja (Total Mes)", f"{total_descuadre:.2f} €")
+    if total_descuadre < -10:
+        c1.error("FALTA DINERO EN CAJA")
+        
+    total_ventas = df_d['Z_Total'].sum()
+    total_stock = df_d['Compra_Stock_Dia'].sum()
+    ratio_bebida = (total_stock / total_ventas * 100) if total_ventas > 0 else 0
+    
+    c2.metric("% Coste Bebida (Real)", f"{ratio_bebida:.1f} %")
+    if ratio_bebida > 35:
+        c2.warning("ALTO CONSUMO STOCK")
+        
+    beneficio_total = df_d['Beneficio_Neto'].sum()
+    c3.metric("Beneficio Neto Real (Tras Gastos)", f"{beneficio_total:.2f} €")
 
     st.markdown("---")
-
-    # GRÁFICOS DE ANÁLISIS
-    c1, c2 = st.columns(2)
     
-    # Gráfico 1: Ventas vs Compras ACUMULADAS
-    # Este gráfico soluciona tu problema: verás si la línea de ventas se separa de la de compras
-    with c1:
-        st.subheader("📈 Ventas vs. Compras (Acumulado)")
-        df['Venta_Acumulada'] = df['Z_Total'].cumsum()
-        df['Stock_Acumulado'] = df['Compra_Stock'].cumsum()
+    # VISUALIZACIÓN DE GASTOS
+    col_left, col_right = st.columns([1, 2])
+    
+    with col_left:
+        st.markdown("### 📉 Resumen de Costes")
+        st.info(f"Días abiertos este mes: **{dias_abiertos}**")
+        st.info(f"Total Facturas Fijas: **{total_fijos_mes:.2f}€**")
+        st.warning(f"Cada vez que abres, cuesta de fijos: **{coste_fijo_por_dia_abierto:.2f}€**")
         
-        fig_ac = go.Figure()
-        fig_ac.add_trace(go.Scatter(x=df['Fecha'], y=df['Venta_Acumulada'], mode='lines+markers', name='Ventas Acumuladas', line=dict(color='green', width=3)))
-        fig_ac.add_trace(go.Scatter(x=df['Fecha'], y=df['Stock_Acumulado'], mode='lines+markers', name='Gasto Bebida Acumulado', line=dict(color='red')))
-        fig_ac.update_layout(title="Si la línea roja toca la verde, pierdes dinero.")
-        st.plotly_chart(fig_ac, use_container_width=True)
-        st.caption("*Este gráfico suaviza los picos de compra de stock semanal.*")
+        # Tabla de facturas fijas
+        if not df_f.empty:
+            st.write("Listado de Facturas:")
+            st.dataframe(df_f[['Concepto', 'Importe']], hide_index=True)
 
-    # Gráfico 2: Desglose de Gastos Diarios (Incluyendo el fijo prorrateado)
-    with c2:
-        st.subheader("🍰 Estructura de Costes Diaria")
-        # Preparamos datos para barra apilada
-        fig_bar = px.bar(df, x='Fecha', y=['Compra_Stock', 'Personal_Extra', 'Fijo_Diario_Imputado', 'Beneficio_Estimado'],
-                         title="¿A dónde va el dinero cada día?",
-                         labels={'value': 'Euros', 'variable': 'Concepto'})
-        st.plotly_chart(fig_bar, use_container_width=True)
+    with col_right:
+        st.markdown("### 📊 Evolución Diaria (Realidad)")
+        # Gráfico de barras apiladas
+        fig = px.bar(df_d, x='Fecha', 
+                     y=['Compra_Stock_Dia', 'Gasto_Personal_Dia', 'Fijo_Asignado', 'Beneficio_Neto'],
+                     title="Composición de cada día (Ingresos vs Gastos)",
+                     labels={'value': 'Euros', 'variable': 'Concepto'})
+        st.plotly_chart(fig, use_container_width=True)
 
-    # TABLA DE DATOS
-    with st.expander("Ver Tabla de Datos Detallada"):
-        st.dataframe(df.style.format("{:.2f}€", subset=['Z_Total', 'Efectivo_Real', 'Descuadre_Caja', 'Beneficio_Estimado']))
+    # TABLA DETALLADA FINAL
+    st.subheader("📋 Detalle Día a Día")
+    st.dataframe(df_d[['Fecha', 'Z_Total', 'Descuadre_Caja', 'Gasto_Personal_Dia', 'Fijo_Asignado', 'Beneficio_Neto']].style.format("{:.2f}€"))
 
 else:
-    st.info("👈 Introduce primero la Configuración Mensual y luego registra el primer día.")
+    st.info("👈 Empieza añadiendo días de apertura en el menú de la izquierda.")

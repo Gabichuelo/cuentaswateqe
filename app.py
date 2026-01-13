@@ -21,7 +21,7 @@ if 'fijos' not in st.session_state:
     st.session_state.fijos = pd.DataFrame(columns=['Mes_Ref', 'Concepto', 'Importe'])
 
 if 'categorias_stock' not in st.session_state:
-    st.session_state.categorias_stock = ["Bebida Alcohol", "Refrescos", "Hielo", "Fruta/Varios"]
+    st.session_state.categorias_stock = ["Bebida Alcohol", "Refrescos", "Hielo", "Fruta/Varios", "Proveedor Yus (Bebida)", "Devolución Envases", "Rappel / Devolución"]
 
 if 'categorias_fijos' not in st.session_state:
     st.session_state.categorias_fijos = ["Alquiler", "Luz", "Agua", "Gestoría", "Internet"]
@@ -29,10 +29,10 @@ if 'categorias_fijos' not in st.session_state:
 def get_month_str(date_obj):
     return date_obj.strftime("%Y-%m")
 
-# --- SIDEBAR: INTRODUCCIÓN DE DATOS ---
+# --- SIDEBAR ---
 st.sidebar.title("🎮 Panel de Control")
 
-# --- CARGA MASIVA ---
+# CARGA MASIVA
 with st.sidebar.expander("📂 Importar Histórico (Excel/CSV)", expanded=False):
     uploaded_file = st.file_uploader("Sube el archivo CSV", type=['csv'])
     if uploaded_file is not None:
@@ -41,7 +41,9 @@ with st.sidebar.expander("📂 Importar Histórico (Excel/CSV)", expanded=False)
             df_upload['Fecha'] = pd.to_datetime(df_upload['Fecha'])
             if st.button("Cargar Datos"):
                 st.session_state.stock = pd.concat([st.session_state.stock, df_upload], ignore_index=True)
-                st.success(f"¡Cargadas {len(df_upload)} líneas!")
+                # Eliminar duplicados exactos
+                st.session_state.stock = st.session_state.stock.drop_duplicates()
+                st.success(f"¡Cargado! Total facturas en sistema: {len(st.session_state.stock)}")
         except Exception as e:
             st.error(f"Error: {e}")
 
@@ -68,7 +70,7 @@ with st.sidebar.expander("1. Gastos Fijos (Alquiler/Luz)", expanded=False):
         mes_str = get_month_str(mes_gasto)
         duplicado = st.session_state.fijos[(st.session_state.fijos['Mes_Ref'] == mes_str) & (st.session_state.fijos['Concepto'] == cat_fijo)]
         if not duplicado.empty:
-            st.error("⛔ Ya existe este gasto este mes.")
+            st.error("⛔ Ya existe este gasto.")
         else:
             nuevo = {'Mes_Ref': mes_str, 'Concepto': cat_fijo, 'Importe': imp_fijo}
             st.session_state.fijos = pd.concat([st.session_state.fijos, pd.DataFrame([nuevo])], ignore_index=True)
@@ -111,12 +113,9 @@ with st.sidebar.expander("3. Cierre Diario", expanded=True):
 # --- DASHBOARD ---
 st.title("🍹 Control de Cuentas Pub Wateqe")
 
-# CREAMOS LAS PESTAÑAS
 tab_mes, tab_anual = st.tabs(["📅 Análisis Mensual", "📈 Resumen ANUAL"])
 
-# ==========================================
-# PESTAÑA 1: VISIÓN MENSUAL (Lo de antes)
-# ==========================================
+# ================= PESTAÑA MENSUAL =================
 with tab_mes:
     todos_meses = set(st.session_state.diario['Mes_Ref'].unique()) | set(st.session_state.stock['Mes_Ref'].unique()) | set(st.session_state.fijos['Mes_Ref'].unique())
     lista_meses = sorted(list(todos_meses))
@@ -124,127 +123,87 @@ with tab_mes:
     if lista_meses:
         mes_sel = st.selectbox("Seleccionar Mes", lista_meses, index=len(lista_meses)-1)
         
-        # Filtrado
+        # Filtros
         df_d = st.session_state.diario[st.session_state.diario['Mes_Ref'] == mes_sel].copy()
         df_s = st.session_state.stock[st.session_state.stock['Mes_Ref'] == mes_sel].copy()
         df_f = st.session_state.fijos[st.session_state.fijos['Mes_Ref'] == mes_sel].copy()
         
-        # Cálculos
+        # KPIs
         ventas_totales = df_d['Z_Total'].sum()
-        personal_total = df_d['Personal_Dia'].sum()
         stock_total = df_s['Importe'].sum()
         fijos_total = df_f['Importe'].sum()
+        personal_total = df_d['Personal_Dia'].sum()
         beneficio = ventas_totales - (personal_total + stock_total + fijos_total)
         
-        # KPIs
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Ventas Mes", f"{ventas_totales:.0f}€")
-        c2.metric("Beneficio Neto", f"{beneficio:.0f}€", delta_color="normal")
-        c3.metric("Descuadre Caja", f"{df_d['Descuadre_Caja'].sum():.0f}€")
+        c1.metric("Ventas", f"{ventas_totales:,.0f}€")
+        c2.metric("Gasto Stock (Real)", f"{stock_total:,.2f}€", delta_color="inverse")
+        c3.metric("Beneficio", f"{beneficio:,.0f}€")
         
-        ratio_stock = (stock_total / ventas_totales * 100) if ventas_totales > 0 else 0
-        c4.metric("% Coste Stock", f"{ratio_stock:.1f}%", delta_color="inverse")
+        ratio = (stock_total/ventas_totales*100) if ventas_totales > 0 else 0
+        c4.metric("% Ratio Bebida", f"{ratio:.1f}%")
 
         st.markdown("---")
         
-        # Gráficos Mes
-        col_izq, col_der = st.columns(2)
+        # AQUÍ ESTÁ LO QUE PEDÍAS: TABLA DETALLADA DE FACTURAS
+        col_izq, col_der = st.columns([1, 1])
+        
         with col_izq:
+            st.subheader(f"🧾 Facturas de {mes_sel}")
             if not df_s.empty:
-                st.subheader("📦 Compras del Mes")
-                st.plotly_chart(px.pie(df_s, values='Importe', names='Categoria', hole=0.4), use_container_width=True)
-            else: st.info("Sin compras este mes.")
+                # Mostramos la tabla formateada
+                st.dataframe(
+                    df_s[['Fecha', 'Categoria', 'Importe']].style.format({"Importe": "{:.2f}€"}),
+                    use_container_width=True,
+                    height=300
+                )
+                st.caption(f"Total Facturas en lista: {len(df_s)}")
+            else:
+                st.info("No hay facturas este mes.")
 
         with col_der:
-            st.subheader("📊 Gastos vs Ingresos")
-            dat = pd.DataFrame({'Tipo': ['Personal', 'Stock', 'Fijos'], '€': [personal_total, stock_total, fijos_total]})
-            st.plotly_chart(px.bar(dat, x='Tipo', y='€', color='Tipo'), use_container_width=True)
+            st.subheader("📊 Distribución")
+            if not df_s.empty:
+                # Agrupamos por categoría para el gráfico
+                df_pie = df_s.groupby('Categoria')['Importe'].sum().reset_index()
+                st.plotly_chart(px.pie(df_pie, values='Importe', names='Categoria', hole=0.4), use_container_width=True)
 
+        st.markdown("---")
+        st.subheader("📅 Operativa Diaria")
         if not df_d.empty:
-            st.subheader("📅 Detalle Diario")
-            st.dataframe(df_d[['Fecha', 'Z_Total', 'Descuadre_Caja', 'Personal_Dia']].style.format("{:.2f}€"))
-    else:
-        st.info("Introduce datos para ver el análisis mensual.")
+            st.dataframe(df_d[['Fecha', 'Z_Total', 'Descuadre_Caja', 'Personal_Dia']].style.format("{:.2f}€"), use_container_width=True)
 
-# ==========================================
-# PESTAÑA 2: VISIÓN ANUAL (NUEVO)
-# ==========================================
+    else:
+        st.info("Carga datos primero.")
+
+# ================= PESTAÑA ANUAL =================
 with tab_anual:
     if lista_meses:
-        st.header("🌍 Visión Global del Año")
+        st.header("🌍 Visión Global")
         
-        # 1. PREPARACIÓN DE DATOS ANUALES
-        # Agrupamos todo por MES para poder compararlos
+        # Agrupación Anual
+        res_diario = st.session_state.diario.groupby('Mes_Ref')[['Z_Total', 'Personal_Dia', 'Descuadre_Caja']].sum().reset_index()
+        res_stock = st.session_state.stock.groupby('Mes_Ref')['Importe'].sum().reset_index().rename(columns={'Importe': 'Gasto_Stock'})
+        res_fijos = st.session_state.fijos.groupby('Mes_Ref')['Importe'].sum().reset_index().rename(columns={'Importe': 'Gasto_Fijos'})
         
-        # Ventas y Personal por Mes
-        resumen_diario = st.session_state.diario.groupby('Mes_Ref')[['Z_Total', 'Personal_Dia', 'Descuadre_Caja']].sum().reset_index()
-        
-        # Stock por Mes
-        resumen_stock = st.session_state.stock.groupby('Mes_Ref')['Importe'].sum().reset_index().rename(columns={'Importe': 'Gasto_Stock'})
-        
-        # Fijos por Mes
-        resumen_fijos = st.session_state.fijos.groupby('Mes_Ref')['Importe'].sum().reset_index().rename(columns={'Importe': 'Gasto_Fijos'})
-        
-        # Juntamos todo en una sola tabla maestra (df_anual)
         df_anual = pd.DataFrame({'Mes_Ref': lista_meses})
-        df_anual = df_anual.merge(resumen_diario, on='Mes_Ref', how='left').fillna(0)
-        df_anual = df_anual.merge(resumen_stock, on='Mes_Ref', how='left').fillna(0)
-        df_anual = df_anual.merge(resumen_fijos, on='Mes_Ref', how='left').fillna(0)
+        df_anual = df_anual.merge(res_diario, on='Mes_Ref', how='left').fillna(0)
+        df_anual = df_anual.merge(res_stock, on='Mes_Ref', how='left').fillna(0)
+        df_anual = df_anual.merge(res_fijos, on='Mes_Ref', how='left').fillna(0)
         
-        # Calculamos Beneficio Mensual
-        df_anual['Gastos_Totales'] = df_anual['Personal_Dia'] + df_anual['Gasto_Stock'] + df_anual['Gasto_Fijos']
-        df_anual['Beneficio'] = df_anual['Z_Total'] - df_anual['Gastos_Totales']
-        df_anual['%_Stock'] = (df_anual['Gasto_Stock'] / df_anual['Z_Total'] * 100).fillna(0)
-
-        # 2. KPIs GLOBALES (TOTAL AÑO)
-        col1, col2, col3, col4 = st.columns(4)
+        df_anual['Gastos_Tot'] = df_anual['Personal_Dia'] + df_anual['Gasto_Stock'] + df_anual['Gasto_Fijos']
+        df_anual['Beneficio'] = df_anual['Z_Total'] - df_anual['Gastos_Tot']
         
-        total_venta_ano = df_anual['Z_Total'].sum()
-        total_beneficio_ano = df_anual['Beneficio'].sum()
-        total_descuadre_ano = df_anual['Descuadre_Caja'].sum()
-        ratio_stock_ano = (df_anual['Gasto_Stock'].sum() / total_venta_ano * 100) if total_venta_ano > 0 else 0
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Ventas Año", f"{df_anual['Z_Total'].sum():,.0f}€")
+        c2.metric("Gasto Stock Año", f"{df_anual['Gasto_Stock'].sum():,.0f}€")
+        c3.metric("Beneficio Neto Año", f"{df_anual['Beneficio'].sum():,.0f}€")
         
-        col1.metric("Ventas Totales (Año)", f"{total_venta_ano:,.0f}€")
-        col2.metric("Beneficio Total (Año)", f"{total_beneficio_ano:,.0f}€", delta_color="normal")
-        col3.metric("Descuadre Acumulado", f"{total_descuadre_ano:.2f}€")
-        col4.metric("% Stock Medio Anual", f"{ratio_stock_ano:.1f}%")
+        st.subheader("Evolución Mensual")
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=df_anual['Mes_Ref'], y=df_anual['Z_Total'], name='Ventas', marker_color='#2ecc71'))
+        fig.add_trace(go.Bar(x=df_anual['Mes_Ref'], y=df_anual['Gasto_Stock'], name='Stock (Bebida)', marker_color='#e74c3c'))
+        st.plotly_chart(fig, use_container_width=True)
         
-        st.markdown("---")
-        
-        # 3. GRÁFICOS DE EVOLUCIÓN
-        
-        c_chart1, c_chart2 = st.columns(2)
-        
-        # Gráfico A: Evolución Ingresos vs Gastos
-        with c_chart1:
-            st.subheader("📈 Evolución: Ingresos vs Gastos")
-            fig_evo = go.Figure()
-            # Barra de Ventas
-            fig_evo.add_trace(go.Bar(x=df_anual['Mes_Ref'], y=df_anual['Z_Total'], name='Ventas', marker_color='green'))
-            # Barra de Gastos
-            fig_evo.add_trace(go.Bar(x=df_anual['Mes_Ref'], y=df_anual['Gastos_Totales'], name='Gastos Totales', marker_color='red'))
-            
-            fig_evo.update_layout(barmode='group')
-            st.plotly_chart(fig_evo, use_container_width=True)
-            
-        # Gráfico B: Evolución del Beneficio
-        with c_chart2:
-            st.subheader("💰 Tendencia del Beneficio")
-            fig_ben = px.line(df_anual, x='Mes_Ref', y='Beneficio', markers=True, title="¿Cuánto ganamos cada mes?")
-            fig_ben.add_hline(y=0, line_dash="dash", line_color="grey") # Línea de cero
-            st.plotly_chart(fig_ben, use_container_width=True)
-
-        # 4. TABLA RESUMEN ANUAL
-        with st.expander("Ver Tabla Resumen por Meses"):
-            st.dataframe(df_anual.style.format({
-                'Z_Total': "{:.2f}€", 
-                'Personal_Dia': "{:.2f}€",
-                'Gasto_Stock': "{:.2f}€",
-                'Gasto_Fijos': "{:.2f}€",
-                'Gastos_Totales': "{:.2f}€",
-                'Beneficio': "{:.2f}€",
-                '%_Stock': "{:.1f}%"
-            }))
-            
-    else:
-        st.info("Aún no hay datos suficientes para mostrar el resumen anual.")
+        with st.expander("Ver Datos Anuales"):
+            st.dataframe(df_anual)
